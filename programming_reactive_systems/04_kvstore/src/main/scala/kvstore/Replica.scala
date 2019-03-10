@@ -1,16 +1,15 @@
 package kvstore
 
-import akka.actor.{ OneForOneStrategy, Props, ActorRef, Actor }
+import akka.actor.{Actor, ActorRef, Cancellable, OneForOneStrategy, PoisonPill, Props, SupervisorStrategy, Terminated}
 import kvstore.Arbiter._
+
 import scala.collection.immutable.Queue
 import akka.actor.SupervisorStrategy.Restart
+
 import scala.annotation.tailrec
-import akka.pattern.{ ask, pipe }
-import akka.actor.Terminated
+import akka.pattern.{ask, pipe}
+
 import scala.concurrent.duration._
-import akka.actor.PoisonPill
-import akka.actor.OneForOneStrategy
-import akka.actor.SupervisorStrategy
 import akka.util.Timeout
 
 object Replica {
@@ -47,6 +46,10 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   var replicators = Set.empty[ActorRef]
   // the expected sequence number for second replica
   var seqNum = 0L
+  // persistence
+  var persistence: ActorRef = context.actorOf(persistenceProps, "persistence")
+  // scheduler
+  var scheduler: Option[Cancellable] = None
 
   arbiter ! Join
 
@@ -72,14 +75,20 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
     case Get(key: String, id: Long) =>
       sender ! GetResult(key, kv.get(key), id)
     case Snapshot(key: String, valueOption: Option[String], seq: Long) =>
-      if (seq == seqNum) {
-        valueOption match {
-          case Some(value) => kv = kv + (key -> value)
-          case None => kv = kv - key
+      replicators = replicators + sender
+      if (seq <= seqNum) {
+        if (seq == seqNum) {
+          valueOption match {
+            case Some(value) => kv = kv + (key -> value)
+            case None => kv = kv - key
+          }
+          seqNum += 1
         }
-        seqNum += 1
+        scheduler = Some(context.system.scheduler.schedule(Duration.Zero, 100 milliseconds, persistence, Persist(key, valueOption, seq)))
       }
-      if (seq <= seqNum) sender ! SnapshotAck(key, seq)
+    case Persisted(key: String, seq: Long) =>
+      scheduler.foreach(_.cancel())
+      replicators.head ! SnapshotAck(key, seq)
   }
 
 }
