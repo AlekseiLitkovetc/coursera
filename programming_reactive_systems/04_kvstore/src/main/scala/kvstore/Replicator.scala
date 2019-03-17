@@ -1,7 +1,6 @@
 package kvstore
 
-import akka.actor.{Actor, ActorRef, Props, ReceiveTimeout}
-import scala.concurrent.duration._
+import akka.actor.{Actor, ActorRef, Props}
 import scala.language.postfixOps
 
 object Replicator {
@@ -16,9 +15,7 @@ object Replicator {
 
 class Replicator(val replica: ActorRef) extends Actor {
   import Replicator._
-  import Replica._
-  import context.dispatcher
-  
+
   /*
    * The contents of this actor is just a suggestion, you can implement it in any way you like.
    */
@@ -36,20 +33,16 @@ class Replicator(val replica: ActorRef) extends Actor {
   }
 
   
-  /* TODO Behavior for the Replicator. */
   def receive: Receive = {
     case replicate @ Replicate(key: String, valueOption: Option[String], id: Long) =>
-      context.setReceiveTimeout(200 milliseconds)
       acks = acks + (_seqCounter -> Tuple2(sender, replicate))
       pending = pending :+ Snapshot(key, valueOption, nextSeq())
-      replica ! pending.head
+      context.actorOf(Sender.props(replica, pending.head))
     case SnapshotAck(key: String, seq: Long) =>
       val (requester, request) = acks(seq)
       acks = acks - seq
       pending = pending.tail
       requester ! Replicated(key, request.id)
-    case ReceiveTimeout =>
-      if (pending.isEmpty) context.setReceiveTimeout(Duration.Inf) else replica ! pending.head
   }
 
 }

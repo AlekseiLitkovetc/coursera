@@ -48,8 +48,8 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   var seqNum = 0L
   // persistence
   var persistence: ActorRef = context.actorOf(persistenceProps, "persistence")
-  // scheduler
-  var scheduler: Option[Cancellable] = None
+  // a map from request ids to senders
+  var waitingSenders = Map.empty[Long, ActorRef]
 
   arbiter ! Join
 
@@ -60,14 +60,41 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
 
   /* TODO Behavior for the leader role. */
   val leader: Receive = {
+    case Replicas(kvNodes) =>
+      val replicas = kvNodes - self
+      secondaries = secondaries.foldLeft(secondaries) { (acc, secondary) =>
+        if (!replicas.contains(secondary._1)) {
+          secondary._2 ! PoisonPill
+          acc - secondary._1
+        } else {
+          acc
+        }
+      }
+      secondaries = replicas.foldLeft(secondaries) { (acc, replica) =>
+        if (!acc.contains(replica)) {
+          acc + (replica -> context.actorOf(Replicator.props(replica)))
+        } else {
+          acc
+        }
+      }
+      replicators = secondaries.values.toSet
     case Insert(key: String, value: String, id: Long) =>
       kv = kv + (key -> value)
-      sender ! OperationAck(id)
+      waitingSenders += (id -> sender)
+      context.actorOf(PrimaryModifier.props(id, persistence, Persist(key, Some(value), id), replicators, Replicate(key, Some(value), id)))
     case Remove(key: String, id: Long) =>
       kv = kv - key
-      sender ! OperationAck(id)
+      waitingSenders += (id -> sender)
+      context.actorOf(PrimaryModifier.props(id, persistence, Persist(key, None, id), replicators, Replicate(key, None, id)))
     case Get(key: String, id: Long) =>
       sender ! GetResult(key, kv.get(key), id)
+    case operationAck @ OperationAck(id: Long) =>
+      waitingSenders(id) ! operationAck
+      waitingSenders -= id
+    case operationFailed @ OperationFailed(id: Long) =>
+      waitingSenders(id) ! operationFailed
+      waitingSenders -= id
+
   }
 
   /* TODO Behavior for the replica role. */
@@ -84,10 +111,9 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
           }
           seqNum += 1
         }
-        scheduler = Some(context.system.scheduler.schedule(Duration.Zero, 100 milliseconds, persistence, Persist(key, valueOption, seq)))
+        context.actorOf(Sender.props(persistence, Persist(key, valueOption, seq)))
       }
     case Persisted(key: String, seq: Long) =>
-      scheduler.foreach(_.cancel())
       replicators.head ! SnapshotAck(key, seq)
   }
 
