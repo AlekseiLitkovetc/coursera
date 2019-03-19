@@ -2,7 +2,7 @@ package kvstore
 
 import akka.actor.{Actor, ActorRef, PoisonPill, Props, ReceiveTimeout}
 import kvstore.Persistence.{Persist, Persisted}
-import kvstore.Replica.{OperationAck, OperationFailed}
+import kvstore.Replica.{OperationAck, OperationFailed, RemoveReplicator}
 import kvstore.Replicator.{Replicate, Replicated}
 
 import scala.concurrent.duration._
@@ -25,16 +25,18 @@ class PrimaryModifier(id: Long, persistence: ActorRef, persistMessage: Persist,
 
   override def receive: Receive = {
     case Persisted(key: String, id: Long) =>
-      excludeRecipient()
+      excludeRecipient(sender)
     case Replicated(key: String, id: Long) =>
-      excludeRecipient()
+      excludeRecipient(sender)
+    case RemoveReplicator(replicator: ActorRef) =>
+      excludeRecipient(replicator)
     case ReceiveTimeout =>
       context.parent ! OperationFailed(id)
       self ! PoisonPill
   }
 
-  private def excludeRecipient(): Unit = {
-    if (recipients.contains(sender)) recipients -= sender
+  private def excludeRecipient(recipient: ActorRef): Unit = {
+    if (recipients.contains(recipient)) recipients -= recipient
     if (recipients.isEmpty) {
       context.parent ! OperationAck(id)
       self ! PoisonPill

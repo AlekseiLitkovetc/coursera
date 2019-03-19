@@ -36,6 +36,7 @@ class Sender(recipient: ActorRef, message: AnyRef) extends Actor {
     case ReceiveTimeout =>
       scheduler.cancel()
       message match { case m: Persist => context.parent ! OperationFailed(m.id) }
+      self ! PoisonPill
   }
 
   private def cancellation(doWork: => Any): Unit = {

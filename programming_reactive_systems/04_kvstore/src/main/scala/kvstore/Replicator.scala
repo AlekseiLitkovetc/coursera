@@ -1,6 +1,8 @@
 package kvstore
 
-import akka.actor.{Actor, ActorRef, Props}
+import akka.actor.{Actor, ActorContext, ActorRef, Props}
+import kvstore.Replica.OperationFailed
+
 import scala.language.postfixOps
 
 object Replicator {
@@ -35,14 +37,22 @@ class Replicator(val replica: ActorRef) extends Actor {
   
   def receive: Receive = {
     case replicate @ Replicate(key: String, valueOption: Option[String], id: Long) =>
-      acks = acks + (_seqCounter -> Tuple2(sender, replicate))
-      pending = pending :+ Snapshot(key, valueOption, nextSeq())
-      context.actorOf(Sender.props(replica, pending.head))
+      val seq = nextSeq()
+      acks = acks + (seq -> Tuple2(sender, replicate))
+      context.actorOf(Sender.props(replica, Snapshot(key, valueOption, seq)))
     case SnapshotAck(key: String, seq: Long) =>
-      val (requester, request) = acks(seq)
-      acks = acks - seq
-      pending = pending.tail
-      requester ! Replicated(key, request.id)
+      acks.get(seq) match {
+        case Some((requester, request)) =>
+          acks = acks - seq
+          requester ! Replicated(key, request.id)
+        case _ =>
+      }
+    case OperationFailed(seq: Long) =>
+      acks.get(seq) match {
+        case Some(_) =>
+          acks = acks - seq
+        case _ =>
+      }
   }
 
 }

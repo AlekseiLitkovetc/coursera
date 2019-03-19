@@ -1,7 +1,6 @@
 package kvstore
 
 import akka.actor.{ActorRef, Actor}
-import scala.collection.immutable
 
 object Arbiter {
   case object Join
