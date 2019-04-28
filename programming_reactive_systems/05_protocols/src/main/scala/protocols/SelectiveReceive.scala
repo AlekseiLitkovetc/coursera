@@ -18,61 +18,23 @@ object SelectiveReceive {
       * `validateAsInitial`, `interpretMessage`,`canonicalize` and `isUnhandled`.
       */
     def apply[T](bufferSize: Int, initialBehavior: Behavior[T]): Behavior[T] = {
-        val buffer: StashBuffer[T] = StashBuffer(bufferSize)
 
-        implicit class BufferOpts(buffer: StashBuffer[T]) {
-            def unstash(ctx: ActorContext[T], behavior: Behavior[T]): Behavior[T] = {
-                buffer.unstash(ctx.asScala, behavior, numberOfMessages = 1, m => m)
-            }
-        }
-
-        def unstashing(behavior: Behavior[T], size: Int, wasApplied: Boolean = false): Behavior[T] =
+        def receiving(behavior: Behavior[T], stashBuffer: StashBuffer[T]): Behavior[T] =
             Behaviors.receive { (ctx: ActorContext[T], msg: T) =>
-                if (wasApplied) {
-                    buffer.stash(msg)
-                    if (size <= 1) {
-                        buffer.unstash(ctx.asScala, unstashing(behavior, buffer.size))
-                    } else {
-                        buffer.unstash(ctx.asScala, unstashing(behavior, size - 1, wasApplied))
-                    }
+                val started = validateAsInitial(start(behavior, ctx))
+                val next = interpretMessage(started, ctx, msg)
+                val nextCanonicalized = canonicalize(next, started, ctx)
+                if (Behavior.isUnhandled(next)) {
+                    stashBuffer.stash(msg)
+                    receiving(nextCanonicalized, stashBuffer)
+                } else if (stashBuffer.nonEmpty) {
+                    stashBuffer.unstashAll(ctx.asScala, receiving(nextCanonicalized, StashBuffer(bufferSize)))
                 } else {
-                    val next: Behavior[T] = interpretMessage(behavior, ctx, msg)
-                    val nextc: Behavior[T] = canonicalize(behavior = next, current = behavior, ctx)
-                    if (nextc == behavior) {
-                        buffer.stash(msg)
-                        if (size <= 1) {
-                            receiving(behavior)
-                        } else {
-                            buffer.unstash(ctx.asScala, unstashing(behavior, size - 1, wasApplied))
-                        }
-                    } else {
-                        if (size <= 1) {
-                            buffer.unstash(ctx.asScala, unstashing(next, buffer.size))
-                        } else {
-                            buffer.unstash(ctx.asScala, unstashing(next, size - 1, wasApplied = true))
-                        }
-                    }
+                    receiving(nextCanonicalized, stashBuffer)
                 }
             }
 
-        def receiving(behavior: Behavior[T]): Behavior[T] =
-            Behaviors.receive { (ctx: ActorContext[T], msg: T) =>
-                val next: Behavior[T] = interpretMessage(behavior, ctx, msg)
-                val nextc: Behavior[T] = canonicalize(behavior = next, current = behavior, ctx)
-                if (nextc == behavior) {
-                    buffer.stash(msg)
-                    receiving(behavior)
-                } else {
-                    buffer.unstash(ctx.asScala, unstashing(next, buffer.size))
-                }
-            }
-
-        Behaviors.receive { (ctx: ActorContext[T], msg: T) =>
-            buffer.stash(msg)
-            buffer.unstashAll(ctx.asScala, receiving(initialBehavior))
-        }.receiveSignal { case (ctx: ActorContext[T], msg: T) =>
-            Behavior.stopped
-        }
+        receiving(initialBehavior, StashBuffer[T](bufferSize))
     }
 
 
